@@ -116,9 +116,9 @@ def parse_form4_xml(s, filename):
         s["tx_share"].append(None if e is None else float(e.text))
         e = ele.find("./transactionAmounts/transactionPricePerShare/value")
         s["tx_price"].append(None if e is None else float(e.text))
-        v = ele.find(
+        e = ele.find(
             "./postTransactionAmounts/sharesOwnedFollowingTransaction/value")
-        s["share_post_tx"].append(float(v) if v else -1.0)
+        s["share_post_tx"].append(None if e is None else float(e.text))
 
 
 def generate_daily_summary_report_data(report_date):
