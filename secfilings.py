@@ -1,25 +1,42 @@
 import os
 import logging
-from secedgar import DailyFilings
-from secedgar.client import NetworkClient
+
 from secedgar.parser import MetaParser
-from _secrets import USER_AGENT_EMAIL, SEC_FILINGS_REPO_FOLDER, SP500_COMPANY_CSV
+from _secrets import SEC_FILINGS_REPO_FOLDER, SP500_COMPANY_CSV
 import xml.etree.ElementTree as ET
-import dateutil.parser
 from datetime import date, timedelta
 import pandas as pd
 import numpy as np
 
-def get_report_date():
-    env_name = "SEC_REPORT_DATE"
-    if  env_name in os.environ:
-        return dateutil.parser.parse(os.environ[env_name]).date()
+
+def get_report_date_range_from_env():
+    env_name = "SEC_REPORT_DATE_RANGE"
+    if env_name in os.environ:
+        return os.environ[env_name]
     else:
-        return previous_weekday()
+        return ""
+
+
+def report_date_range():
+    return report_date_range_from_str(get_report_date_range_from_env())
+
+
+def report_date_range_from_str(date_range: str = None):
+    if date_range:
+        dates = [date.fromisoformat(d) for d in date_range.split(":")]
+        min_date = min(dates)
+        max_date = max(dates)
+    else:
+        min_date = max_date = previous_weekday()
+
+    num_days = int((max_date - min_date) / timedelta(days=1))
+
+    return (min_date + timedelta(days=n) for n in range(0, num_days+1))
+
 
 def previous_weekday():
-    # today weekday    = 0, 2, 3, 4, 5, 6
-    # previous weekday = 4, 1, 2, 3, 4, 4
+    # today weekday    = 0, 1, 2, 3, 4, 5, 6
+    # previous weekday = 4, 0, 1, 2, 3, 4, 4
     today_weekday = date.today().weekday()
     if today_weekday == 0:
         return date.today() - timedelta(days=3)
@@ -31,20 +48,6 @@ def previous_weekday():
 
 def filings_path(report_date):
     return os.path.join(SEC_FILINGS_REPO_FOLDER, f"{report_date:%Y%m%d}")
-
-
-def download_form4(report_date):
-    def _filter_for_form4(filing_entry):
-        return filing_entry.form_type.lower() == "4"
-
-    # retry interval in seconds increases  2**n * backoff_factor
-    daily_filings = DailyFilings(date=report_date,
-                                 client=NetworkClient(
-                                     user_agent=USER_AGENT_EMAIL,
-                                     backoff_factor=5.0,
-                                     rate_limit=5),
-                                 entry_filter=_filter_for_form4)
-    daily_filings.save(directory=SEC_FILINGS_REPO_FOLDER)
 
 
 def process_download(report_date):
@@ -107,20 +110,24 @@ def parse_form4_xml(s, filename):
         s["relationship"].append(relationship)
         s["title"].append(title)
 
-        s["tx_date"].append(dateutil.parser.isoparse(e_tx_date.text).date())
+        s["tx_date"].append(date.fromisoformat(e_tx_date.text[:10]))
         s["tx_code"].append(e_tx_code.text)
         e = ele.find("./transactionAmounts/transactionShares/value")
         s["tx_share"].append(None if e is None else float(e.text))
         e = ele.find("./transactionAmounts/transactionPricePerShare/value")
         s["tx_price"].append(None if e is None else float(e.text))
         v = ele.find(
-            "./postTransactionAmounts/sharesOwnedFollowingTransaction/value").text
-        s["share_post_tx"].append(float(v))
+            "./postTransactionAmounts/sharesOwnedFollowingTransaction/value")
+        s["share_post_tx"].append(float(v) if v else -1.0)
 
 
 def generate_daily_summary_report_data(report_date):
-    all_form4_xml = filter(lambda l: "form4" in l.lower(
-    ), find_all_filing_files(report_date, "xml"))
+    def filter_form4(n: str):
+        n = n.lower()
+        return "form4" in n or "doc4" in n
+
+    all_form4_xml = filter(
+        filter_form4, find_all_filing_files(report_date, "xml"))
 
     s = {"cik": [], "ticker": [], "name": [], "relationship": [], "title": [],
          "tx_date": [], "tx_code": [], "tx_share": [], "tx_price": [], "share_post_tx": []}
@@ -132,7 +139,10 @@ def generate_daily_summary_report_data(report_date):
         folder_name = os.path.basename(os.path.dirname(filename))
         if folder_name not in folder_seen:
             folder_seen.append(folder_name)
-            parse_form4_xml(s, filename)
+            try:
+                parse_form4_xml(s, filename)
+            except:
+                logging.warn("Cannot parse file: " + filename)
 
     return s
 
@@ -240,7 +250,7 @@ def summary_by_insider(df):
     df_output["Trade Date/Range"] = df_summary.apply(
         calc_trade_date_range, axis=1)
 
-    return df_output
+    return df_output, df_summary
 
 
 def group_by_insider(df):
@@ -256,9 +266,9 @@ def generate_daily_summary_report(report_data):
     df = create_raw_df(report_data)
 
     df_ticker = summary_by_ticker(df.copy())
-    df_insider = summary_by_insider(df.copy())
+    df_insider, df_insider_raw = summary_by_insider(df.copy())
 
-    return df_ticker, df_insider, df
+    return df_ticker, df_insider, df, df_insider_raw
 
 
 def create_raw_df(report_data):
