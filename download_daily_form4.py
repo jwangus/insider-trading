@@ -24,7 +24,7 @@ class SkipErrorNetworkClient(NetworkClient):
             async with await session.get(link) as response:
                 contents = await response.read()
         except Exception as e:
-            logging.warning(f"Cannot download: {link} - reason: {str(e)}" )
+            logging.warning(f"File download failed - response code: {str(e)}" )
             contents = b""
 
         return contents
